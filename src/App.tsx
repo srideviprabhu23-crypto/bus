@@ -771,6 +771,28 @@ export default function App() {
                         >
                           Got it
                         </button>
+                        {error.toLowerCase().includes("domain") && (
+                          <button 
+                            onClick={() => {
+                              navigator.clipboard.writeText(window.location.hostname);
+                              alert(`Domain "${window.location.hostname}" copied to clipboard!`);
+                            }}
+                            className="text-xs bg-slate-100 text-slate-900 px-3 py-1.5 rounded-lg font-bold hover:bg-slate-200 transition-colors"
+                          >
+                            Copy Domain
+                          </button>
+                        )}
+                        {(error.toLowerCase().includes("domain") || error.toLowerCase().includes("popup")) && (
+                          <button 
+                            onClick={() => {
+                              setError(null);
+                              handleLogin();
+                            }}
+                            className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-blue-700 transition-colors"
+                          >
+                            Try Login Again
+                          </button>
+                        )}
                         <button 
                           onClick={() => window.open(window.location.href, '_blank')}
                           className="text-xs bg-slate-100 text-slate-700 px-3 py-1.5 rounded-lg font-bold hover:bg-slate-200 transition-colors flex items-center gap-1"
