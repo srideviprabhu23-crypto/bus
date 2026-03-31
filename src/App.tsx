@@ -71,6 +71,7 @@ function MapUpdater({ center }: { center: [number, number] }) {
 
 export default function App() {
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
   const [selectedRoute, setSelectedRoute] = useState<Route>(COIMBATORE_ROUTES[0]);
   const [busLocations, setBusLocations] = useState<Record<string, BusLocation>>({});
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
@@ -80,6 +81,7 @@ export default function App() {
   const [mapCenter, setMapCenter] = useState<[number, number]>([11.0168, 76.9558]);
   const [etas, setEtas] = useState<ETAInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
 
   const driverBusId = "bus-driver-sim-1";
   const liveContributorId = useRef(`contributor-${Math.random().toString(36).substr(2, 9)}`);
@@ -94,14 +96,38 @@ export default function App() {
 
   // Initialize Socket
   useEffect(() => {
-    const newSocket = io();
+    const newSocket = io(window.location.origin, {
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+    });
+    
     setSocket(newSocket);
 
+    newSocket.on('connect', () => {
+      console.log("Connected to server:", newSocket.id);
+      setIsConnected(true);
+      setError(null);
+    });
+
+    newSocket.on('disconnect', () => {
+      console.log("Disconnected from server");
+      setIsConnected(false);
+    });
+
+    newSocket.on('connect_error', (err) => {
+      console.error("Connection error:", err);
+      setIsConnected(false);
+      // Don't show error immediately as it might be temporary
+    });
+
     newSocket.on('all-bus-locations', (locations) => {
+      console.log("Received all locations:", locations);
       setBusLocations(locations);
     });
 
     newSocket.on('bus-location-updated', (location: BusLocation) => {
+      console.log("Bus updated:", location);
       setBusLocations(prev => ({
         ...prev,
         [location.busId]: location
@@ -258,7 +284,57 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 overflow-y-auto p-4 space-y-6">
+          {/* Active Buses Section - Moved to top for visibility */}
+          <div>
+            <h2 className="px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3 flex items-center justify-between">
+              Live Bus Activity
+              <span className="bg-green-100 text-green-600 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                {Object.keys(busLocations).length} Online
+              </span>
+            </h2>
+            <div className="space-y-2">
+              {Object.keys(busLocations).length === 0 ? (
+                <div className="px-2 py-4 border-2 border-dashed border-slate-100 rounded-2xl text-center">
+                  <p className="text-[11px] text-slate-400 italic">No buses active yet. Be the first to share!</p>
+                </div>
+              ) : (
+                (Object.values(busLocations) as BusLocation[]).map(bus => {
+                  const route = COIMBATORE_ROUTES.find(r => r.id === bus.routeId);
+                  return (
+                    <button 
+                      key={bus.busId} 
+                      onClick={() => setMapCenter([bus.lat, bus.lng])}
+                      className={cn(
+                        "w-full bg-white border p-3 rounded-xl flex items-center gap-3 transition-all hover:shadow-md text-left",
+                        bus.routeId === selectedRoute.id ? "border-blue-200 bg-blue-50/30" : "border-slate-100"
+                      )}
+                    >
+                      <div className={cn(
+                        "p-2 rounded-lg text-white",
+                        bus.routeId === selectedRoute.id ? "bg-blue-600" : "bg-slate-400"
+                      )}>
+                        <Bus size={16} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-bold text-slate-900 truncate">
+                            Route {route?.number || "Unknown"}
+                          </p>
+                          <span className="text-[10px] text-green-600 font-medium animate-pulse">● LIVE</span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 truncate">{route?.name || "Tracking..."}</p>
+                        <p className="text-[9px] text-slate-400 mt-1 font-mono uppercase tracking-tighter">
+                          ID: {bus.busId.slice(0, 8)} • {bus.speed} km/h
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
           <div>
             <h2 className="px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Available Routes</h2>
             <div className="space-y-1">
@@ -291,28 +367,6 @@ export default function App() {
               ))}
             </div>
           </div>
-
-          {(Object.values(busLocations) as BusLocation[]).filter(b => b.routeId === selectedRoute.id).length > 0 && (
-            <div>
-              <h2 className="px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Active Buses on Route</h2>
-              <div className="space-y-2">
-                {(Object.values(busLocations) as BusLocation[]).filter(b => b.routeId === selectedRoute.id).map(bus => (
-                  <div key={bus.busId} className="bg-green-50 border border-green-100 p-3 rounded-xl flex items-center gap-3">
-                    <div className="bg-green-500 p-2 rounded-lg text-white">
-                      <Bus size={16} />
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold text-green-700">LIVE BUS</p>
-                        <span className="text-[10px] text-green-600 font-medium animate-pulse">● LIVE</span>
-                      </div>
-                      <p className="text-[10px] text-green-600">{bus.speed} km/h • Updated just now</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
 
         <div className="p-4 border-t border-slate-100 space-y-3">
@@ -409,6 +463,14 @@ export default function App() {
               <span className="text-sm font-medium">Live Map View</span>
             </div>
             <div className="h-4 w-px bg-slate-200" />
+            <div className={cn(
+              "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold transition-all",
+              isConnected ? "text-green-600 bg-green-50" : "text-amber-600 bg-amber-50"
+            )}>
+              <div className={cn("w-2 h-2 rounded-full", isConnected ? "bg-green-600 animate-pulse" : "bg-amber-600")} />
+              {isConnected ? "Connected" : "Reconnecting..."}
+            </div>
+            <div className="h-4 w-px bg-slate-200" />
             <div className="flex items-center gap-2 text-blue-600 bg-blue-50 px-3 py-1 rounded-full text-xs font-semibold">
               <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse" />
               {Object.keys(busLocations).length} Buses Online
@@ -439,13 +501,29 @@ export default function App() {
             <MapUpdater center={mapCenter} />
 
             {/* User Location Marker */}
-            {userLocation && (
-              <Marker position={userLocation} icon={new L.Icon({
-                iconUrl: 'https://cdn-icons-png.flaticon.com/512/235/235861.png',
-                iconSize: [24, 24],
-                iconAnchor: [12, 12],
-              })}>
-                <Popup>You are here</Popup>
+            {userLocation && isSharingLive && (
+              <Marker 
+                position={userLocation} 
+                icon={L.divIcon({
+                  className: 'custom-user-icon',
+                  html: `
+                    <div class="relative">
+                      <div class="absolute -inset-2 bg-green-500/30 rounded-full animate-ping"></div>
+                      <div class="relative bg-green-600 p-2 rounded-full shadow-lg border-2 border-white text-white flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                      </div>
+                    </div>
+                  `,
+                  iconSize: [32, 32],
+                  iconAnchor: [16, 16],
+                })}
+              >
+                <Popup>
+                  <div className="p-1 text-center">
+                    <p className="font-bold text-green-600">You are here</p>
+                    <p className="text-[10px] text-slate-500">Sharing live location on Route {selectedRoute.number}</p>
+                  </div>
+                </Popup>
               </Marker>
             )}
 
@@ -475,11 +553,26 @@ export default function App() {
             ))}
 
             {/* Buses */}
-            {(Object.values(busLocations) as BusLocation[]).map(bus => (
+            {(Object.values(busLocations) as BusLocation[])
+              .filter(bus => (Date.now() - (bus.lastUpdate || 0)) < 300000) // Only show buses updated in last 5 mins
+              .map(bus => (
               <Marker 
                 key={bus.busId} 
                 position={[bus.lat, bus.lng]} 
-                icon={busIcon}
+                icon={L.divIcon({
+                  className: 'custom-bus-icon',
+                  html: `
+                    <div class="relative">
+                      <div class="absolute -inset-2 bg-blue-500/20 rounded-full animate-ping"></div>
+                      <div class="relative bg-blue-600 p-2 rounded-lg shadow-lg border-2 border-white text-white flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6v6"/><path d="M15 6v6"/><path d="M2 12h19.6"/><path d="M18 18h3s1-1.33 1-3c0-4.67-3.67-8-8-8H7c-4.33 0-8 3.33-8 8 0 1.67 1 3 1 3h3"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></svg>
+                      </div>
+                    </div>
+                  `,
+                  iconSize: [32, 32],
+                  iconAnchor: [16, 16],
+                  popupAnchor: [0, -16],
+                })}
               >
                 <Popup>
                   <div className="p-2 min-w-[150px]">
@@ -496,7 +589,7 @@ export default function App() {
                       </div>
                       <div className="flex justify-between">
                         <span>Last update:</span>
-                        <span className="font-medium">Just now</span>
+                        <span className="font-medium">{new Date(bus.lastUpdate || Date.now()).toLocaleTimeString()}</span>
                       </div>
                     </div>
                   </div>
@@ -548,7 +641,79 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          {/* Map Controls */}
+          {/* Debug Panel */}
+        <div className="absolute top-4 right-4 z-[1000] flex flex-col items-end gap-2">
+          <button 
+            onClick={() => setShowDebug(!showDebug)}
+            className="bg-slate-900/80 backdrop-blur-sm text-white p-2 rounded-full shadow-lg hover:bg-slate-900 transition-all"
+          >
+            <Settings size={20} className={cn(showDebug && "rotate-90 transition-transform")} />
+          </button>
+          
+          <AnimatePresence>
+            {showDebug && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9, y: -20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: -20 }}
+                className="bg-white border border-slate-200 shadow-2xl rounded-2xl p-4 w-72 max-h-[80vh] overflow-y-auto"
+              >
+                <h3 className="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
+                  <Activity size={16} className="text-blue-600" />
+                  System Diagnostics
+                </h3>
+                
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Connection</p>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-slate-600">Status:</span>
+                      <span className={cn("text-xs font-bold", isConnected ? "text-green-600" : "text-red-600")}>
+                        {isConnected ? "Connected" : "Disconnected"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-slate-600">Socket ID:</span>
+                      <span className="text-[10px] font-mono text-slate-400">{socket?.id || "None"}</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Your Session</p>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-slate-600">Sharing:</span>
+                      <span className={cn("text-xs font-bold", isSharingLive ? "text-blue-600" : "text-slate-400")}>
+                        {isSharingLive ? "Active" : "Off"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-slate-600">My ID:</span>
+                      <span className="text-[10px] font-mono text-slate-400">{liveContributorId.current.slice(0, 12)}...</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Active Data ({Object.keys(busLocations).length})</p>
+                    <div className="bg-slate-50 rounded-lg p-2 max-h-40 overflow-y-auto">
+                      <pre className="text-[9px] text-slate-500 font-mono">
+                        {JSON.stringify(busLocations, null, 2)}
+                      </pre>
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={() => window.location.reload()}
+                    className="w-full py-2 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-200 transition-colors"
+                  >
+                    Hard Refresh App
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Map Controls */}
           <div className="absolute top-6 right-6 flex flex-col gap-2 z-10">
             <button className="w-10 h-10 bg-white shadow-lg rounded-xl flex items-center justify-center text-slate-600 hover:bg-slate-50 transition-all">
               <Navigation size={20} />

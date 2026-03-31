@@ -30,6 +30,7 @@ async function startServer() {
     socket.emit("all-bus-locations", busLocations);
 
     socket.on("update-bus-location", (data) => {
+      console.log(`[${new Date().toLocaleTimeString()}] Location update from ${socket.id} for bus ${data.busId}`);
       // data: { busId, routeId, lat, lng, speed }
       busLocations[data.busId] = {
         ...data,
