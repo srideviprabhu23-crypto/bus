@@ -40,6 +40,7 @@ import {
   User as FirebaseUser
 } from 'firebase/auth';
 import { db, auth } from './lib/firebase';
+import firebaseConfig from '../firebase-applet-config.json';
 import { COIMBATORE_ROUTES } from './constants';
 import { Route, BusLocation, Stop, ETAInfo } from './types';
 import { cn } from './lib/utils';
@@ -101,6 +102,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [isLocating, setIsLocating] = useState(false);
+  const [isDemoMode, setIsDemoMode] = useState(false);
 
   const driverBusId = "bus-driver-sim-1";
   const driverIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -184,6 +186,15 @@ export default function App() {
   };
 
   const updateLocationInFirestore = async (busId: string, data: any) => {
+    // In Demo Mode, we only update local state, skipping Firestore
+    if (isDemoMode) {
+      setBusLocations(prev => ({
+        ...prev,
+        [busId]: { ...data, lastUpdate: Date.now() }
+      }));
+      return;
+    }
+
     try {
       await setDoc(doc(db, 'bus_locations', busId), {
         ...data,
@@ -574,10 +585,14 @@ export default function App() {
                   <AlertCircle size={20} />
                 </div>
                 <div className="flex-1">
-                  <h4 className="text-sm font-bold text-slate-900">Location Access Required</h4>
+                  <h4 className="text-sm font-bold text-slate-900">
+                    {error.includes("Domain Not Authorized") ? "Firebase Domain Authorization" : 
+                     error.includes("Popup Blocked") ? "Login Popup Blocked" : 
+                     "Location Access Required"}
+                  </h4>
                   <p className="text-xs text-slate-500 mt-1 leading-relaxed">
                     {error.includes("Domain Not Authorized") 
-                      ? "Your new deployment domain needs to be authorized in the Firebase Console. Copy the domain from the troubleshooting panel below."
+                      ? `The domain "${window.location.hostname}" is not authorized in your Firebase Console. You must add it to Auth > Settings > Authorized Domains.`
                       : error.includes("Popup Blocked")
                       ? "Your browser blocked the login popup. Please click 'Open in New Tab' below to login safely."
                       : error.includes("denied") 
@@ -585,15 +600,41 @@ export default function App() {
                       : error}
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
+                    {error.includes("Domain Not Authorized") && (
+                      <button 
+                        onClick={() => {
+                          navigator.clipboard.writeText(window.location.hostname);
+                          alert("Domain copied to clipboard!");
+                        }}
+                        className="text-xs bg-slate-100 text-slate-900 px-3 py-1.5 rounded-lg font-bold hover:bg-slate-200 transition-colors"
+                      >
+                        Copy Domain
+                      </button>
+                    )}
                     <button 
                       onClick={() => {
                         setError(null);
-                        startLiveSharing();
+                        if (error.includes("Domain Not Authorized") || error.includes("Popup Blocked")) {
+                          handleLogin();
+                        } else {
+                          startLiveSharing();
+                        }
                       }}
                       className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-blue-700 transition-colors"
                     >
                       Try Again
                     </button>
+                    {(error.includes("Domain Not Authorized") || error.includes("Popup Blocked")) && (
+                      <button 
+                        onClick={() => {
+                          setIsDemoMode(true);
+                          setError(null);
+                        }}
+                        className="text-xs bg-amber-50 text-amber-600 px-3 py-1.5 rounded-lg font-bold hover:bg-amber-100 transition-colors"
+                      >
+                        Bypass (Demo Mode)
+                      </button>
+                    )}
                     <a 
                       href={window.location.href} 
                       target="_blank" 
@@ -875,6 +916,21 @@ export default function App() {
                       <span className="text-xs text-slate-600">My ID:</span>
                       <span className="text-[10px] font-mono text-slate-400">{user?.uid || "Not Logged In"}</span>
                     </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-slate-600">Demo Mode:</span>
+                      <button 
+                        onClick={() => {
+                          setIsDemoMode(!isDemoMode);
+                          if (!isDemoMode) setError(null);
+                        }}
+                        className={cn(
+                          "px-2 py-0.5 rounded text-[10px] font-bold transition-colors",
+                          isDemoMode ? "bg-amber-100 text-amber-600" : "bg-slate-100 text-slate-400"
+                        )}
+                      >
+                        {isDemoMode ? "ON" : "OFF"}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="space-y-2">
@@ -913,10 +969,29 @@ export default function App() {
                         <ChevronRight size={12} />
                         Open in New Tab (Fixes most issues)
                       </button>
-                      <div className="p-2 bg-amber-50 border border-amber-100 rounded-lg">
+                      <div className="p-2 bg-amber-50 border border-amber-100 rounded-lg space-y-2">
                         <p className="text-[9px] text-amber-700 leading-tight">
                           <strong>Note:</strong> If login fails after deployment, ensure <code>{window.location.hostname}</code> is added to "Authorized Domains" in Firebase Console.
                         </p>
+                        <div className="flex gap-1">
+                          <button 
+                            onClick={() => {
+                              navigator.clipboard.writeText(window.location.hostname);
+                              alert("Domain copied to clipboard!");
+                            }}
+                            className="flex-1 py-1 bg-amber-100 text-amber-700 rounded text-[8px] font-bold hover:bg-amber-200 transition-colors"
+                          >
+                            Copy Domain
+                          </button>
+                          <a 
+                            href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex-1 py-1 bg-amber-600 text-white rounded text-[8px] font-bold hover:bg-amber-700 transition-colors text-center"
+                          >
+                            Go to Console
+                          </a>
+                        </div>
                       </div>
                     </div>
                   </div>
