@@ -88,6 +88,57 @@ function MapUpdater({ center }: { center: [number, number] }) {
   return null;
 }
 
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -150,7 +201,11 @@ export default function App() {
       setBusLocations(locations);
     }, (err) => {
       console.error("Firestore Error:", err);
-      setError("Failed to sync live data. Check your connection.");
+      try {
+        handleFirestoreError(err, OperationType.LIST, 'bus_locations');
+      } catch (e: any) {
+        setError("Failed to sync live data. Check your connection.");
+      }
     });
 
     return () => unsubscribe();
@@ -162,14 +217,18 @@ export default function App() {
       // Use signInWithPopup but handle common iframe/deployment errors
       await signInWithPopup(auth, provider);
       setError(null);
+      setIsDemoMode(false);
     } catch (err: any) {
       console.error("Login Error:", err);
       if (err.code === 'auth/unauthorized-domain') {
-        setError(`Domain Not Authorized: The domain "${window.location.hostname}" needs to be added to your Firebase Console under Auth > Settings > Authorized Domains.`);
+        setIsDemoMode(true);
+        setError(`Demo Mode Activated: The domain "${window.location.hostname}" is not authorized in Firebase. You can still use the app in Demo Mode, but live sharing with others requires authorization.`);
       } else if (err.code === 'auth/popup-blocked') {
-        setError("Popup Blocked: Your browser blocked the login window. Please allow popups for this site or open the app in a new tab.");
+        setIsDemoMode(true);
+        setError("Demo Mode Activated: Login popup was blocked. You can still use the app in Demo Mode, or open it in a new tab to login.");
       } else if (err.code === 'auth/internal-error' || err.code === 'auth/network-request-failed') {
-        setError("Connection Error: Failed to reach Firebase. This often happens in restricted environments or if third-party cookies are blocked.");
+        setIsDemoMode(true);
+        setError("Demo Mode Activated: Connection to Firebase failed. You can still use the app locally.");
       } else {
         setError(`Login failed: ${err.message}`);
       }
@@ -202,9 +261,15 @@ export default function App() {
       });
     } catch (err: any) {
       console.error("Firestore Write Error:", err);
-      if (err.code === 'permission-denied') {
-        setError("Permission denied. Please log in to share location.");
-        setIsSharingLive(false);
+      try {
+        handleFirestoreError(err, OperationType.WRITE, `bus_locations/${busId}`);
+      } catch (e: any) {
+        if (err.code === 'permission-denied') {
+          setError("Permission denied. Please log in to share location.");
+          setIsSharingLive(false);
+        } else {
+          setError(`Firestore Error: ${err.message}`);
+        }
       }
     }
   };
@@ -287,7 +352,8 @@ export default function App() {
 
     // Check for secure context
     if (!window.isSecureContext) {
-      setError("Location sharing requires a secure (HTTPS) connection. Your browser might be blocking this in an iframe.");
+      setIsDemoMode(true);
+      setError("Demo Mode Activated: Location sharing requires HTTPS. You can still use the app in Demo Mode.");
       setIsSharingLive(false);
       return;
     }
@@ -296,9 +362,9 @@ export default function App() {
     if (navigator.permissions && navigator.permissions.query) {
       navigator.permissions.query({ name: 'geolocation' as PermissionName }).then((result) => {
         if (result.state === 'denied') {
-          setError("Location access is denied. Please click the lock icon in your browser address bar and set Location to 'Allow'.");
+          setIsDemoMode(true);
+          setError("Demo Mode Activated: Location access was denied. You can still use the app in Demo Mode, or click the lock icon in your address bar to allow access.");
           setIsSharingLive(false);
-          return;
         }
       }).catch(e => console.warn("Permissions API not supported for geolocation", e));
     }
@@ -586,54 +652,48 @@ export default function App() {
                 </div>
                 <div className="flex-1">
                   <h4 className="text-sm font-bold text-slate-900">
-                    {error.includes("Domain Not Authorized") ? "Firebase Domain Authorization" : 
-                     error.includes("Popup Blocked") ? "Login Popup Blocked" : 
-                     "Location Access Required"}
+                    {error.includes("Demo Mode Activated") ? "Offline / Demo Mode" : 
+                     error.includes("Location Access Required") ? "Location Access Required" : 
+                     "System Message"}
                   </h4>
                   <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                    {error.includes("Domain Not Authorized") 
-                      ? `The domain "${window.location.hostname}" is not authorized in your Firebase Console. You must add it to Auth > Settings > Authorized Domains.`
-                      : error.includes("Popup Blocked")
-                      ? "Your browser blocked the login popup. Please click 'Open in New Tab' below to login safely."
-                      : error.includes("denied") 
-                      ? "It looks like location access was blocked. To share your live bus location, please click the lock icon in your browser address bar and set Location to 'Allow'." 
-                      : error}
+                    {error}
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {error.includes("Domain Not Authorized") && (
+                    {error.includes("Demo Mode Activated") ? (
                       <button 
-                        onClick={() => {
-                          navigator.clipboard.writeText(window.location.hostname);
-                          alert("Domain copied to clipboard!");
-                        }}
-                        className="text-xs bg-slate-100 text-slate-900 px-3 py-1.5 rounded-lg font-bold hover:bg-slate-200 transition-colors"
+                        onClick={() => setError(null)}
+                        className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-slate-800 transition-colors"
                       >
-                        Copy Domain
+                        Got it
                       </button>
-                    )}
-                    <button 
-                      onClick={() => {
-                        setError(null);
-                        if (error.includes("Domain Not Authorized") || error.includes("Popup Blocked")) {
-                          handleLogin();
-                        } else {
-                          startLiveSharing();
-                        }
-                      }}
-                      className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-blue-700 transition-colors"
-                    >
-                      Try Again
-                    </button>
-                    {(error.includes("Domain Not Authorized") || error.includes("Popup Blocked")) && (
-                      <button 
-                        onClick={() => {
-                          setIsDemoMode(true);
-                          setError(null);
-                        }}
-                        className="text-xs bg-amber-50 text-amber-600 px-3 py-1.5 rounded-lg font-bold hover:bg-amber-100 transition-colors"
-                      >
-                        Bypass (Demo Mode)
-                      </button>
+                    ) : (
+                      <>
+                        {error.includes("Domain") && (
+                          <button 
+                            onClick={() => {
+                              navigator.clipboard.writeText(window.location.hostname);
+                              alert("Domain copied to clipboard!");
+                            }}
+                            className="text-xs bg-slate-100 text-slate-900 px-3 py-1.5 rounded-lg font-bold hover:bg-slate-200 transition-colors"
+                          >
+                            Copy Domain
+                          </button>
+                        )}
+                        <button 
+                          onClick={() => {
+                            setError(null);
+                            if (error.includes("Domain") || error.includes("Popup")) {
+                              handleLogin();
+                            } else {
+                              startLiveSharing();
+                            }
+                          }}
+                          className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-blue-700 transition-colors"
+                        >
+                          Try Again
+                        </button>
+                      </>
                     )}
                     <a 
                       href={window.location.href} 
