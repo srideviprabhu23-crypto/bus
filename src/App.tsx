@@ -5,7 +5,6 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
-import { io, Socket } from 'socket.io-client';
 import { 
   Bus, 
   MapPin, 
@@ -18,10 +17,29 @@ import {
   Settings,
   AlertCircle,
   Map as MapIcon,
-  Activity
+  Activity,
+  LogIn,
+  LogOut
 } from 'lucide-react';
 import L from 'leaflet';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  collection, 
+  doc, 
+  onSnapshot, 
+  setDoc, 
+  deleteDoc, 
+  serverTimestamp,
+  getDocFromServer
+} from 'firebase/firestore';
+import { 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  onAuthStateChanged,
+  signOut,
+  User as FirebaseUser
+} from 'firebase/auth';
+import { db, auth } from './lib/firebase';
 import { COIMBATORE_ROUTES } from './constants';
 import { Route, BusLocation, Stop, ETAInfo } from './types';
 import { cn } from './lib/utils';
@@ -70,10 +88,8 @@ function MapUpdater({ center }: { center: [number, number] }) {
 }
 
 export default function App() {
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const socketRef = useRef<Socket | null>(null);
-  const isConnectedRef = useRef(false);
   const [selectedRoute, setSelectedRoute] = useState<Route>(COIMBATORE_ROUTES[0]);
   const [busLocations, setBusLocations] = useState<Record<string, BusLocation>>({});
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
@@ -86,7 +102,6 @@ export default function App() {
   const [showDebug, setShowDebug] = useState(false);
 
   const driverBusId = "bus-driver-sim-1";
-  const liveContributorId = useRef(`contributor-${Math.random().toString(36).substr(2, 9)}`);
   const driverIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const watchIdRef = useRef<number | null>(null);
   const selectedRouteRef = useRef(selectedRoute);
@@ -96,61 +111,81 @@ export default function App() {
     selectedRouteRef.current = selectedRoute;
   }, [selectedRoute]);
 
-  // Initialize Socket
+  // Firebase Auth Listener
   useEffect(() => {
-    const newSocket = io(window.location.origin, {
-      transports: ['websocket', 'polling'],
-      reconnectionAttempts: 10,
-      reconnectionDelay: 1000,
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
     });
-    
-    setSocket(newSocket);
-    socketRef.current = newSocket;
-
-    newSocket.on('connect', () => {
-      console.log("Connected to server:", newSocket.id);
-      setIsConnected(true);
-      isConnectedRef.current = true;
-      setError(null);
-      // Request fresh data on connect
-      newSocket.emit('request-all-locations');
-    });
-
-    newSocket.on('pong', (data) => {
-      console.log("Server pong:", data);
-      // Visual feedback could go here
-    });
-
-    newSocket.on('disconnect', () => {
-      console.log("Disconnected from server");
-      setIsConnected(false);
-      isConnectedRef.current = false;
-    });
-
-    newSocket.on('connect_error', (err) => {
-      console.error("Connection error:", err);
-      setIsConnected(false);
-      isConnectedRef.current = false;
-      // Don't show error immediately as it might be temporary
-    });
-
-    newSocket.on('all-bus-locations', (locations) => {
-      console.log("Received all locations:", locations);
-      setBusLocations(locations);
-    });
-
-    newSocket.on('bus-location-updated', (location: BusLocation) => {
-      console.log("Bus updated:", location);
-      setBusLocations(prev => ({
-        ...prev,
-        [location.busId]: location
-      }));
-    });
-
-    return () => {
-      newSocket.close();
-    };
+    return () => unsubscribe();
   }, []);
+
+  // Test Connection to Firestore
+  useEffect(() => {
+    async function testConnection() {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+        setIsConnected(true);
+      } catch (error) {
+        if(error instanceof Error && error.message.includes('the client is offline')) {
+          setIsConnected(false);
+        } else {
+          // Other errors might still mean we are "connected" to the service
+          setIsConnected(true);
+        }
+      }
+    }
+    testConnection();
+  }, []);
+
+  // Firestore Real-time Listener for Bus Locations
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'bus_locations'), (snapshot) => {
+      const locations: Record<string, BusLocation> = {};
+      snapshot.forEach((doc) => {
+        locations[doc.id] = doc.data() as BusLocation;
+      });
+      setBusLocations(locations);
+    }, (err) => {
+      console.error("Firestore Error:", err);
+      setError("Failed to sync live data. Check your connection.");
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const handleLogin = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+    } catch (err: any) {
+      console.error("Login Error:", err);
+      setError(`Login failed: ${err.message}`);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      if (isSharingLive) stopLiveSharing();
+    } catch (err: any) {
+      console.error("Logout Error:", err);
+    }
+  };
+
+  const updateLocationInFirestore = async (busId: string, data: any) => {
+    try {
+      await setDoc(doc(db, 'bus_locations', busId), {
+        ...data,
+        lastUpdate: Date.now()
+      });
+    } catch (err: any) {
+      console.error("Firestore Write Error:", err);
+      if (err.code === 'permission-denied') {
+        setError("Permission denied. Please log in to share location.");
+        setIsSharingLive(false);
+      }
+    }
+  };
 
   // Calculate ETAs for selected route
   useEffect(() => {
@@ -174,9 +209,9 @@ export default function App() {
     setEtas(newEtas);
   }, [busLocations, selectedRoute]);
 
-  // Driver Simulation Logic
   const startSimulation = useCallback(() => {
-    if (!socket) return;
+    if (isDriverMode) return;
+    setIsDriverMode(true);
     
     let stopIndex = 0;
     let progress = 0; // 0 to 1 between stops
@@ -189,15 +224,13 @@ export default function App() {
       const lat = currentStop.lat + (nextStop.lat - currentStop.lat) * progress;
       const lng = currentStop.lng + (nextStop.lng - currentStop.lng) * progress;
 
-      if (socketRef.current && isConnectedRef.current) {
-        socketRef.current.emit('update-bus-location', {
-          busId: driverBusId,
-          routeId: selectedRoute.id,
-          lat,
-          lng,
-          speed: 25
-        });
-      }
+      updateLocationInFirestore(driverBusId, {
+        busId: driverBusId,
+        routeId: selectedRoute.id,
+        lat,
+        lng,
+        speed: 25
+      });
 
       progress += 0.05;
       if (progress >= 1) {
@@ -205,18 +238,23 @@ export default function App() {
         stopIndex = (stopIndex + 1) % selectedRoute.stops.length;
       }
     }, 2000);
-  }, [socket, selectedRoute]);
+  }, [selectedRoute, isDriverMode]);
 
   const stopSimulation = useCallback(() => {
     if (driverIntervalRef.current) {
       clearInterval(driverIntervalRef.current);
       driverIntervalRef.current = null;
     }
+    setIsDriverMode(false);
+    deleteDoc(doc(db, 'bus_locations', driverBusId));
   }, []);
 
   // Real Live Location Sharing Logic
   const startLiveSharing = useCallback(() => {
-    if (!socketRef.current) return;
+    if (!user) {
+      setError("Please log in to share your location.");
+      return;
+    }
     if (!navigator.geolocation) {
       setError("Geolocation is not supported by your browser");
       return;
@@ -229,15 +267,13 @@ export default function App() {
         const newPos: [number, number] = [latitude, longitude];
         setUserLocation(newPos);
         
-        if (socketRef.current && isConnectedRef.current) {
-          socketRef.current.emit('update-bus-location', {
-            busId: liveContributorId.current,
-            routeId: selectedRouteRef.current.id,
-            lat: latitude,
-            lng: longitude,
-            speed: Math.round((speed || 0) * 3.6) // Convert m/s to km/h
-          });
-        }
+        updateLocationInFirestore(user.uid, {
+          busId: user.uid,
+          routeId: selectedRouteRef.current.id,
+          lat: latitude,
+          lng: longitude,
+          speed: Math.round((speed || 0) * 3.6) // Convert m/s to km/h
+        });
         
         // Only center once when starting to share
         setMapCenter(newPos);
@@ -253,7 +289,7 @@ export default function App() {
         timeout: 10000
       }
     );
-  }, [socket]);
+  }, [user]);
 
   const stopLiveSharing = useCallback(() => {
     if (watchIdRef.current !== null) {
@@ -261,7 +297,10 @@ export default function App() {
       watchIdRef.current = null;
     }
     setIsSharingLive(false);
-  }, []);
+    if (user) {
+      deleteDoc(doc(db, 'bus_locations', user.uid));
+    }
+  }, [user]);
 
   useEffect(() => {
     if (isDriverMode) {
@@ -320,7 +359,7 @@ export default function App() {
                   .sort((a, b) => (b.lastUpdate || 0) - (a.lastUpdate || 0))
                   .map(bus => {
                   const route = COIMBATORE_ROUTES.find(r => r.id === bus.routeId);
-                  const isMe = bus.busId === liveContributorId.current;
+                  const isMe = user && bus.busId === user.uid;
                   const secondsAgo = Math.floor((Date.now() - (bus.lastUpdate || Date.now())) / 1000);
                   
                   return (
@@ -505,12 +544,32 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {user ? (
+              <div className="flex items-center gap-3">
+                <div className="hidden sm:flex flex-col items-end">
+                  <span className="text-xs font-bold text-slate-900">{user.displayName}</span>
+                  <button onClick={handleLogout} className="text-[10px] text-red-500 hover:underline">Logout</button>
+                </div>
+                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 overflow-hidden border border-blue-200">
+                  {user.photoURL ? (
+                    <img src={user.photoURL} alt={user.displayName || ""} className="w-full h-full object-cover" />
+                  ) : (
+                    <User size={18} />
+                  )}
+                </div>
+              </div>
+            ) : (
+              <button 
+                onClick={handleLogin}
+                className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-blue-700 transition-all shadow-md"
+              >
+                <LogIn size={16} />
+                Login
+              </button>
+            )}
             <button className="p-2 text-slate-400 hover:text-slate-600 transition-colors">
               <Settings size={20} />
             </button>
-            <div className="w-8 h-8 bg-slate-200 rounded-full flex items-center justify-center text-slate-500">
-              <User size={18} />
-            </div>
           </div>
         </header>
 
@@ -608,7 +667,7 @@ export default function App() {
                         {COIMBATORE_ROUTES.find(r => r.id === bus.routeId)?.number || "BUS"}
                       </div>
                       <p className="font-bold text-slate-900">
-                        {bus.busId === liveContributorId.current ? "My Device" : "Live Tracking"}
+                        {user && bus.busId === user.uid ? "My Device" : "Live Tracking"}
                       </p>
                     </div>
                     <div className="space-y-1 text-xs text-slate-600">
@@ -705,7 +764,7 @@ export default function App() {
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-xs text-slate-600">Socket ID:</span>
-                      <span className="text-[10px] font-mono text-slate-400">{socket?.id || "None"}</span>
+                      <span className="text-[10px] font-mono text-slate-400">Firebase Mode</span>
                     </div>
                   </div>
 
@@ -719,7 +778,7 @@ export default function App() {
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-xs text-slate-600">My ID:</span>
-                      <span className="text-[10px] font-mono text-slate-400">{liveContributorId.current.slice(0, 12)}...</span>
+                      <span className="text-[10px] font-mono text-slate-400">{user?.uid || "Not Logged In"}</span>
                     </div>
                   </div>
 
@@ -732,12 +791,6 @@ export default function App() {
                     </div>
                   </div>
 
-                  <button 
-                    onClick={() => socket?.emit('ping')}
-                    className="w-full py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 transition-colors mb-2"
-                  >
-                    Test Connection (Ping)
-                  </button>
                   <button 
                     onClick={() => window.location.reload()}
                     className="w-full py-2 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-200 transition-colors"

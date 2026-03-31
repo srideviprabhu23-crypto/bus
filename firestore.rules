@@ -1,0 +1,47 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: bus_locations
+// Document ID: {busId}
+// Fields:
+//   - busId: string (required) - Unique ID for the bus/device
+//   - routeId: string (required) - ID of the route being followed
+//   - lat: number (required) - Latitude
+//   - lng: number (required) - Longitude
+//   - speed: number (required) - Current speed in km/h
+//   - lastUpdate: number (required) - Timestamp of last update
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isValidBusLocation(data) {
+      return data.keys().hasAll(['busId', 'routeId', 'lat', 'lng', 'speed', 'lastUpdate']) &&
+             data.busId is string && data.busId.size() > 0 &&
+             data.routeId is string && data.routeId.size() > 0 &&
+             data.lat is number && data.lng is number &&
+             data.speed is number && data.lastUpdate is number;
+    }
+
+    match /bus_locations/{busId} {
+      // Anyone can read bus locations to see them on the map
+      allow read: if true;
+      
+      // Only authenticated users can share their location
+      // We use the busId as the document ID, which should match the user's UID for security
+      allow create, update: if isAuthenticated() && 
+                             isValidBusLocation(request.resource.data) &&
+                             (request.auth.uid == busId || request.auth.token.email == "srideviprabhu23@gmail.com");
+                             
+      allow delete: if isAuthenticated() && (request.auth.uid == busId || request.auth.token.email == "srideviprabhu23@gmail.com");
+    }
+  }
+}
