@@ -1,0 +1,7 @@
+{
+  "name": "Coimbatore Bus Tracker",
+  "description": "Real-time bus tracking and ETA for Coimbatore city buses.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
