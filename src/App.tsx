@@ -157,10 +157,20 @@ export default function App() {
   const handleLogin = async () => {
     try {
       const provider = new GoogleAuthProvider();
+      // Use signInWithPopup but handle common iframe/deployment errors
       await signInWithPopup(auth, provider);
+      setError(null);
     } catch (err: any) {
       console.error("Login Error:", err);
-      setError(`Login failed: ${err.message}`);
+      if (err.code === 'auth/unauthorized-domain') {
+        setError(`Domain Not Authorized: The domain "${window.location.hostname}" needs to be added to your Firebase Console under Auth > Settings > Authorized Domains.`);
+      } else if (err.code === 'auth/popup-blocked') {
+        setError("Popup Blocked: Your browser blocked the login window. Please allow popups for this site or open the app in a new tab.");
+      } else if (err.code === 'auth/internal-error' || err.code === 'auth/network-request-failed') {
+        setError("Connection Error: Failed to reach Firebase. This often happens in restricted environments or if third-party cookies are blocked.");
+      } else {
+        setError(`Login failed: ${err.message}`);
+      }
     }
   };
 
@@ -262,6 +272,26 @@ export default function App() {
     }
 
     setIsSharingLive(true);
+    setError(null); // Clear previous errors
+
+    // Check for secure context
+    if (!window.isSecureContext) {
+      setError("Location sharing requires a secure (HTTPS) connection. Your browser might be blocking this in an iframe.");
+      setIsSharingLive(false);
+      return;
+    }
+
+    // Check permissions first if possible
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: 'geolocation' as PermissionName }).then((result) => {
+        if (result.state === 'denied') {
+          setError("Location access is denied. Please click the lock icon in your browser address bar and set Location to 'Allow'.");
+          setIsSharingLive(false);
+          return;
+        }
+      }).catch(e => console.warn("Permissions API not supported for geolocation", e));
+    }
+
     watchIdRef.current = navigator.geolocation.watchPosition(
       (position) => {
         const { latitude, longitude, speed } = position.coords;
@@ -546,7 +576,11 @@ export default function App() {
                 <div className="flex-1">
                   <h4 className="text-sm font-bold text-slate-900">Location Access Required</h4>
                   <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                    {error.includes("denied") 
+                    {error.includes("Domain Not Authorized") 
+                      ? "Your new deployment domain needs to be authorized in the Firebase Console. Copy the domain from the troubleshooting panel below."
+                      : error.includes("Popup Blocked")
+                      ? "Your browser blocked the login popup. Please click 'Open in New Tab' below to login safely."
+                      : error.includes("denied") 
                       ? "It looks like location access was blocked. To share your live bus location, please click the lock icon in your browser address bar and set Location to 'Allow'." 
                       : error}
                   </p>
@@ -840,6 +874,50 @@ export default function App() {
                     <div className="flex items-center justify-between">
                       <span className="text-xs text-slate-600">My ID:</span>
                       <span className="text-[10px] font-mono text-slate-400">{user?.uid || "Not Logged In"}</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Troubleshooting</p>
+                    <div className="space-y-2">
+                      <button 
+                        onClick={async () => {
+                          setIsConnected(false);
+                          try {
+                            await getDocFromServer(doc(db, 'test', 'connection'));
+                            setIsConnected(true);
+                            setError(null);
+                          } catch (e: any) {
+                            setIsConnected(false);
+                            setError(`Connection Test Failed: ${e.message}`);
+                          }
+                        }}
+                        className="w-full py-1.5 bg-slate-100 text-slate-600 rounded-lg text-[10px] font-bold hover:bg-slate-200 transition-colors flex items-center justify-center gap-2"
+                      >
+                        <Activity size={12} />
+                        Test Connection
+                      </button>
+                      {!user && (
+                        <button 
+                          onClick={handleLogin}
+                          className="w-full py-1.5 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-bold hover:bg-blue-100 transition-colors flex items-center justify-center gap-2"
+                        >
+                          <LogIn size={12} />
+                          Retry Login
+                        </button>
+                      )}
+                      <button 
+                        onClick={() => window.open(window.location.href, '_blank')}
+                        className="w-full py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-bold hover:bg-slate-800 transition-colors flex items-center justify-center gap-2"
+                      >
+                        <ChevronRight size={12} />
+                        Open in New Tab (Fixes most issues)
+                      </button>
+                      <div className="p-2 bg-amber-50 border border-amber-100 rounded-lg">
+                        <p className="text-[9px] text-amber-700 leading-tight">
+                          <strong>Note:</strong> If login fails after deployment, ensure <code>{window.location.hostname}</code> is added to "Authorized Domains" in Firebase Console.
+                        </p>
+                      </div>
                     </div>
                   </div>
 
