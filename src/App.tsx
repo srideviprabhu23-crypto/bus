@@ -100,6 +100,7 @@ export default function App() {
   const [etas, setEtas] = useState<ETAInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
 
   const driverBusId = "bus-driver-sim-1";
   const driverIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -302,6 +303,27 @@ export default function App() {
     }
   }, [user]);
 
+  const locateMe = useCallback(() => {
+    if (!navigator.geolocation) {
+      setError("Geolocation is not supported");
+      return;
+    }
+    setIsLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const newPos: [number, number] = [position.coords.latitude, position.coords.longitude];
+        setUserLocation(newPos);
+        setMapCenter(newPos);
+        setIsLocating(false);
+      },
+      (err) => {
+        setError(`Could not find location: ${err.message}`);
+        setIsLocating(false);
+      },
+      { enableHighAccuracy: true }
+    );
+  }, []);
+
   useEffect(() => {
     if (isDriverMode) {
       startSimulation();
@@ -341,7 +363,50 @@ export default function App() {
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-6">
-          {/* Active Buses Section - Moved to top for visibility */}
+          {/* Live Control Center */}
+          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className={cn("w-2 h-2 rounded-full animate-pulse", isSharingLive ? "bg-green-500" : "bg-slate-300")} />
+                <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                  {isSharingLive ? "Live Status: Online" : "Live Status: Offline"}
+                </span>
+              </div>
+              <Activity size={16} className={isSharingLive ? "text-blue-600 animate-pulse" : "text-slate-300"} />
+            </div>
+
+            {!user ? (
+              <div className="bg-blue-50 rounded-xl p-3 border border-blue-100">
+                <p className="text-[11px] text-blue-700 leading-relaxed">
+                  <strong>Want to share your location?</strong> Login with Google to help others track this route in real-time.
+                </p>
+              </div>
+            ) : (
+              <button
+                onClick={isSharingLive ? stopLiveSharing : startLiveSharing}
+                className={cn(
+                  "w-full py-3 rounded-xl font-bold text-sm transition-all shadow-md flex items-center justify-center gap-2",
+                  isSharingLive 
+                    ? "bg-red-50 text-red-600 border border-red-100 hover:bg-red-100" 
+                    : "bg-blue-600 text-white hover:bg-blue-700"
+                )}
+              >
+                {isSharingLive ? (
+                  <>
+                    <AlertCircle size={18} />
+                    Stop Sharing Location
+                  </>
+                ) : (
+                  <>
+                    <Navigation size={18} />
+                    Start Live Sharing
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+
+          {/* Active Buses Section */}
           <div>
             <h2 className="px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3 flex items-center justify-between">
               Live Bus Activity
@@ -436,38 +501,32 @@ export default function App() {
           </div>
         </div>
 
-        <div className="p-4 border-t border-slate-100 space-y-3">
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-            <h3 className="text-sm font-bold text-slate-900 mb-1">Contribute Location</h3>
-            <p className="text-[11px] text-slate-500 mb-3">On this bus? Share your live GPS to help others track it. <span className="text-blue-600 font-medium">(Requires GPS permission)</span></p>
-            <button 
-              onClick={() => isSharingLive ? stopLiveSharing() : startLiveSharing()}
-              className={cn(
-                "w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-semibold text-sm transition-all shadow-sm",
-                isSharingLive 
-                  ? "bg-red-500 text-white hover:bg-red-600 animate-pulse" 
-                  : "bg-blue-600 text-white hover:bg-blue-700"
-              )}
-            >
-              <MapPin size={16} />
-              {isSharingLive ? "Sharing Live GPS..." : "Share My Location"}
-            </button>
+          {/* Developer Tools Section */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between px-1">
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Developer Tools</h3>
+              <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                <Info size={12} />
+                <span>Simulation</span>
+              </div>
+            </div>
+            
+            <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 space-y-3">
+              <button
+                onClick={isDriverMode ? stopSimulation : startSimulation}
+                className={cn(
+                  "w-full py-2.5 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2",
+                  isDriverMode 
+                    ? "bg-amber-50 text-amber-600 border border-amber-100" 
+                    : "bg-white text-slate-600 border border-slate-200 hover:border-slate-300"
+                )}
+              >
+                <Bus size={16} />
+                {isDriverMode ? "Stop Simulation" : "Simulate Bus Movement"}
+              </button>
+            </div>
           </div>
-
-          <button 
-            onClick={() => setIsDriverMode(!isDriverMode)}
-            className={cn(
-              "w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-medium text-sm transition-all",
-              isDriverMode 
-                ? "bg-red-50 text-red-600 hover:bg-red-100" 
-                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-            )}
-          >
-            {isDriverMode ? <Activity size={16} /> : <Navigation size={16} />}
-            {isDriverMode ? "Stop Simulation" : "Simulation Mode"}
-          </button>
-        </div>
-      </aside>
+        </aside>
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col relative">
@@ -588,15 +647,15 @@ export default function App() {
             <MapUpdater center={mapCenter} />
 
             {/* User Location Marker */}
-            {userLocation && isSharingLive && (
+            {userLocation && (
               <Marker 
                 position={userLocation} 
                 icon={L.divIcon({
                   className: 'custom-user-icon',
                   html: `
                     <div class="relative">
-                      <div class="absolute -inset-2 bg-green-500/30 rounded-full animate-ping"></div>
-                      <div class="relative bg-green-600 p-2 rounded-full shadow-lg border-2 border-white text-white flex items-center justify-center">
+                      <div class="absolute -inset-2 bg-blue-500/30 rounded-full animate-ping"></div>
+                      <div class="relative bg-blue-600 p-2 rounded-full shadow-lg border-2 border-white text-white flex items-center justify-center">
                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                       </div>
                     </div>
@@ -607,8 +666,10 @@ export default function App() {
               >
                 <Popup>
                   <div className="p-1 text-center">
-                    <p className="font-bold text-green-600">You are here</p>
-                    <p className="text-[10px] text-slate-500">Sharing live location on Route {selectedRoute.number}</p>
+                    <p className="font-bold text-blue-600">You are here</p>
+                    <p className="text-[10px] text-slate-500">
+                      {isSharingLive ? `Sharing live location on Route ${selectedRoute.number}` : "Current GPS Location"}
+                    </p>
                   </div>
                 </Popup>
               </Marker>
@@ -805,8 +866,16 @@ export default function App() {
 
         {/* Map Controls */}
           <div className="absolute top-6 right-6 flex flex-col gap-2 z-10">
-            <button className="w-10 h-10 bg-white shadow-lg rounded-xl flex items-center justify-center text-slate-600 hover:bg-slate-50 transition-all">
-              <Navigation size={20} />
+            <button 
+              onClick={locateMe}
+              disabled={isLocating}
+              className={cn(
+                "w-10 h-10 bg-white shadow-lg rounded-xl flex items-center justify-center transition-all",
+                isLocating ? "text-blue-600 animate-pulse" : "text-slate-600 hover:bg-slate-50"
+              )}
+              title="Locate Me"
+            >
+              <MapPin size={20} />
             </button>
             <button className="w-10 h-10 bg-white shadow-lg rounded-xl flex items-center justify-center text-slate-600 hover:bg-slate-50 transition-all">
               <Info size={20} />
