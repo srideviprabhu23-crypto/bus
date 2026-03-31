@@ -72,6 +72,8 @@ function MapUpdater({ center }: { center: [number, number] }) {
 export default function App() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const socketRef = useRef<Socket | null>(null);
+  const isConnectedRef = useRef(false);
   const [selectedRoute, setSelectedRoute] = useState<Route>(COIMBATORE_ROUTES[0]);
   const [busLocations, setBusLocations] = useState<Record<string, BusLocation>>({});
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
@@ -103,21 +105,32 @@ export default function App() {
     });
     
     setSocket(newSocket);
+    socketRef.current = newSocket;
 
     newSocket.on('connect', () => {
       console.log("Connected to server:", newSocket.id);
       setIsConnected(true);
+      isConnectedRef.current = true;
       setError(null);
+      // Request fresh data on connect
+      newSocket.emit('request-all-locations');
+    });
+
+    newSocket.on('pong', (data) => {
+      console.log("Server pong:", data);
+      // Visual feedback could go here
     });
 
     newSocket.on('disconnect', () => {
       console.log("Disconnected from server");
       setIsConnected(false);
+      isConnectedRef.current = false;
     });
 
     newSocket.on('connect_error', (err) => {
       console.error("Connection error:", err);
       setIsConnected(false);
+      isConnectedRef.current = false;
       // Don't show error immediately as it might be temporary
     });
 
@@ -176,13 +189,15 @@ export default function App() {
       const lat = currentStop.lat + (nextStop.lat - currentStop.lat) * progress;
       const lng = currentStop.lng + (nextStop.lng - currentStop.lng) * progress;
 
-      socket.emit('update-bus-location', {
-        busId: driverBusId,
-        routeId: selectedRoute.id,
-        lat,
-        lng,
-        speed: 25
-      });
+      if (socketRef.current && isConnectedRef.current) {
+        socketRef.current.emit('update-bus-location', {
+          busId: driverBusId,
+          routeId: selectedRoute.id,
+          lat,
+          lng,
+          speed: 25
+        });
+      }
 
       progress += 0.05;
       if (progress >= 1) {
@@ -201,7 +216,7 @@ export default function App() {
 
   // Real Live Location Sharing Logic
   const startLiveSharing = useCallback(() => {
-    if (!socket) return;
+    if (!socketRef.current) return;
     if (!navigator.geolocation) {
       setError("Geolocation is not supported by your browser");
       return;
@@ -214,13 +229,15 @@ export default function App() {
         const newPos: [number, number] = [latitude, longitude];
         setUserLocation(newPos);
         
-        socket.emit('update-bus-location', {
-          busId: liveContributorId.current,
-          routeId: selectedRouteRef.current.id,
-          lat: latitude,
-          lng: longitude,
-          speed: Math.round((speed || 0) * 3.6) // Convert m/s to km/h
-        });
+        if (socketRef.current && isConnectedRef.current) {
+          socketRef.current.emit('update-bus-location', {
+            busId: liveContributorId.current,
+            routeId: selectedRouteRef.current.id,
+            lat: latitude,
+            lng: longitude,
+            speed: Math.round((speed || 0) * 3.6) // Convert m/s to km/h
+          });
+        }
         
         // Only center once when starting to share
         setMapCenter(newPos);
@@ -299,15 +316,21 @@ export default function App() {
                   <p className="text-[11px] text-slate-400 italic">No buses active yet. Be the first to share!</p>
                 </div>
               ) : (
-                (Object.values(busLocations) as BusLocation[]).map(bus => {
+                (Object.values(busLocations) as BusLocation[])
+                  .sort((a, b) => (b.lastUpdate || 0) - (a.lastUpdate || 0))
+                  .map(bus => {
                   const route = COIMBATORE_ROUTES.find(r => r.id === bus.routeId);
+                  const isMe = bus.busId === liveContributorId.current;
+                  const secondsAgo = Math.floor((Date.now() - (bus.lastUpdate || Date.now())) / 1000);
+                  
                   return (
                     <button 
                       key={bus.busId} 
                       onClick={() => setMapCenter([bus.lat, bus.lng])}
                       className={cn(
                         "w-full bg-white border p-3 rounded-xl flex items-center gap-3 transition-all hover:shadow-md text-left",
-                        bus.routeId === selectedRoute.id ? "border-blue-200 bg-blue-50/30" : "border-slate-100"
+                        bus.routeId === selectedRoute.id ? "border-blue-200 bg-blue-50/30" : "border-slate-100",
+                        isMe && "ring-2 ring-blue-500 ring-offset-2"
                       )}
                     >
                       <div className={cn(
@@ -319,13 +342,18 @@ export default function App() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
                           <p className="text-xs font-bold text-slate-900 truncate">
-                            Route {route?.number || "Unknown"}
+                            {isMe ? "My Device" : `Route ${route?.number || "???"}`}
                           </p>
-                          <span className="text-[10px] text-green-600 font-medium animate-pulse">● LIVE</span>
+                          <span className={cn(
+                            "text-[10px] font-medium",
+                            secondsAgo < 10 ? "text-green-600 animate-pulse" : "text-slate-400"
+                          )}>
+                            {secondsAgo < 5 ? "● JUST NOW" : `● ${secondsAgo}s ago`}
+                          </span>
                         </div>
                         <p className="text-[10px] text-slate-500 truncate">{route?.name || "Tracking..."}</p>
                         <p className="text-[9px] text-slate-400 mt-1 font-mono uppercase tracking-tighter">
-                          ID: {bus.busId.slice(0, 8)} • {bus.speed} km/h
+                          {bus.speed} km/h • {bus.busId.slice(0, 6)}
                         </p>
                       </div>
                     </button>
@@ -554,7 +582,6 @@ export default function App() {
 
             {/* Buses */}
             {(Object.values(busLocations) as BusLocation[])
-              .filter(bus => (Date.now() - (bus.lastUpdate || 0)) < 300000) // Only show buses updated in last 5 mins
               .map(bus => (
               <Marker 
                 key={bus.busId} 
@@ -580,7 +607,9 @@ export default function App() {
                       <div className="bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">
                         {COIMBATORE_ROUTES.find(r => r.id === bus.routeId)?.number || "BUS"}
                       </div>
-                      <p className="font-bold text-slate-900">Live Tracking</p>
+                      <p className="font-bold text-slate-900">
+                        {bus.busId === liveContributorId.current ? "My Device" : "Live Tracking"}
+                      </p>
                     </div>
                     <div className="space-y-1 text-xs text-slate-600">
                       <div className="flex justify-between">
@@ -589,7 +618,9 @@ export default function App() {
                       </div>
                       <div className="flex justify-between">
                         <span>Last update:</span>
-                        <span className="font-medium">{new Date(bus.lastUpdate || Date.now()).toLocaleTimeString()}</span>
+                        <span className="font-medium">
+                          {Math.floor((Date.now() - (bus.lastUpdate || Date.now())) / 1000)}s ago
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -701,6 +732,12 @@ export default function App() {
                     </div>
                   </div>
 
+                  <button 
+                    onClick={() => socket?.emit('ping')}
+                    className="w-full py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 transition-colors mb-2"
+                  >
+                    Test Connection (Ping)
+                  </button>
                   <button 
                     onClick={() => window.location.reload()}
                     className="w-full py-2 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-200 transition-colors"

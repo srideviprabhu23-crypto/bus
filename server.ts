@@ -40,6 +40,15 @@ async function startServer() {
       io.emit("bus-location-updated", busLocations[data.busId]);
     });
 
+    socket.on("request-all-locations", () => {
+      console.log(`[${new Date().toLocaleTimeString()}] Client ${socket.id} requested all locations`);
+      socket.emit("all-bus-locations", busLocations);
+    });
+
+    socket.on("ping", () => {
+      socket.emit("pong", { time: Date.now() });
+    });
+
     socket.on("disconnect", () => {
       console.log("Client disconnected:", socket.id);
     });
