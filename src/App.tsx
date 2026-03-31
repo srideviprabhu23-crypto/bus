@@ -19,7 +19,8 @@ import {
   Map as MapIcon,
   Activity,
   LogIn,
-  LogOut
+  LogOut,
+  ExternalLink
 } from 'lucide-react';
 import L from 'leaflet';
 import { motion, AnimatePresence } from 'motion/react';
@@ -255,6 +256,7 @@ export default function App() {
     }
 
     try {
+      console.log(`Updating Firestore location for ${busId}:`, data);
       await setDoc(doc(db, 'bus_locations', busId), {
         ...data,
         lastUpdate: Date.now()
@@ -348,6 +350,7 @@ export default function App() {
     }
 
     setIsSharingLive(true);
+    setIsLocating(true);
     setError(null); // Clear previous errors
 
     // Check for secure context
@@ -355,6 +358,7 @@ export default function App() {
       setIsDemoMode(true);
       setError("Demo Mode Activated: Location sharing requires HTTPS. You can still use the app in Demo Mode.");
       setIsSharingLive(false);
+      setIsLocating(false);
       return;
     }
 
@@ -363,39 +367,72 @@ export default function App() {
       navigator.permissions.query({ name: 'geolocation' as PermissionName }).then((result) => {
         if (result.state === 'denied') {
           setIsDemoMode(true);
-          setError("Demo Mode Activated: Location access was denied. You can still use the app in Demo Mode, or click the lock icon in your address bar to allow access.");
+          setError("Location Permission Denied: Access was denied. You can still use the app in Demo Mode, or click the lock icon in your address bar to allow access.");
           setIsSharingLive(false);
+          setIsLocating(false);
         }
       }).catch(e => console.warn("Permissions API not supported for geolocation", e));
     }
 
-    watchIdRef.current = navigator.geolocation.watchPosition(
+    const options = {
+      enableHighAccuracy: true,
+      maximumAge: 30000,
+      timeout: 30000
+    };
+
+    // First try to get current position to ensure it's working
+    navigator.geolocation.getCurrentPosition(
       (position) => {
+        setIsLocating(false);
         const { latitude, longitude, speed } = position.coords;
         const newPos: [number, number] = [latitude, longitude];
         setUserLocation(newPos);
+        setMapCenter(newPos);
         
         updateLocationInFirestore(user.uid, {
           busId: user.uid,
           routeId: selectedRouteRef.current.id,
           lat: latitude,
           lng: longitude,
-          speed: Math.round((speed || 0) * 3.6) // Convert m/s to km/h
+          speed: Math.round((speed || 0) * 3.6)
         });
-        
-        // Only center once when starting to share
-        setMapCenter(newPos);
+
+        // Now start watching
+        watchIdRef.current = navigator.geolocation.watchPosition(
+          (pos) => {
+            const { latitude: lat, longitude: lng, speed: s } = pos.coords;
+            const p: [number, number] = [lat, lng];
+            setUserLocation(p);
+            
+            updateLocationInFirestore(user.uid, {
+              busId: user.uid,
+              routeId: selectedRouteRef.current.id,
+              lat,
+              lng,
+              speed: Math.round((s || 0) * 3.6)
+            });
+          },
+          (err) => {
+            console.error("Watch Error:", err);
+            // Don't stop sharing on a single watch error, just log it
+          },
+          options
+        );
       },
       (err) => {
-        console.error(err);
-        setError(`Location Error: ${err.message}`);
+        console.error("Initial Position Error:", err);
+        setIsLocating(false);
         setIsSharingLive(false);
+        
+        if (err.code === err.TIMEOUT) {
+          setError("Location Timeout: It's taking too long to get your GPS fix. Try moving to an open area or using a mobile device.");
+        } else if (err.code === err.PERMISSION_DENIED) {
+          setError("Location Permission Denied: Please allow location access in your browser settings.");
+        } else {
+          setError(`Location Error: ${err.message}`);
+        }
       },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 0,
-        timeout: 10000
-      }
+      options
     );
   }, [user]);
 
@@ -491,14 +528,21 @@ export default function App() {
             ) : (
               <button
                 onClick={isSharingLive ? stopLiveSharing : startLiveSharing}
+                disabled={isLocating}
                 className={cn(
                   "w-full py-3 rounded-xl font-bold text-sm transition-all shadow-md flex items-center justify-center gap-2",
                   isSharingLive 
                     ? "bg-red-50 text-red-600 border border-red-100 hover:bg-red-100" 
-                    : "bg-blue-600 text-white hover:bg-blue-700"
+                    : "bg-blue-600 text-white hover:bg-blue-700",
+                  isLocating && "opacity-70 cursor-not-allowed"
                 )}
               >
-                {isSharingLive ? (
+                {isLocating ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Locating...
+                  </>
+                ) : isSharingLive ? (
                   <>
                     <AlertCircle size={18} />
                     Stop Sharing Location
@@ -653,20 +697,88 @@ export default function App() {
                 <div className="flex-1">
                   <h4 className="text-sm font-bold text-slate-900">
                     {error.includes("Demo Mode Activated") ? "Offline / Demo Mode" : 
+                     error.includes("Permission Denied") ? "Location Permission Blocked" : 
                      error.includes("Location Access Required") ? "Location Access Required" : 
                      "System Message"}
                   </h4>
                   <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                    {error}
+                    {error.includes("Permission Denied") ? (
+                      <>
+                        Location access was denied. 
+                        {window.self !== window.top ? (
+                          <> This often happens because the app is running in an <strong>iframe</strong>. Opening the app in a <strong>new tab</strong> usually fixes this.</>
+                        ) : (
+                          <> Please click the lock icon in your address bar to allow location access and then click <strong>Try Again</strong>.</>
+                        )}
+                      </>
+                    ) : error}
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {error.includes("Demo Mode Activated") ? (
-                      <button 
-                        onClick={() => setError(null)}
-                        className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-slate-800 transition-colors"
-                      >
-                        Got it
-                      </button>
+                    {error.includes("Permission Denied") ? (
+                      <>
+                        {window.self !== window.top && (
+                          <button 
+                            onClick={() => window.open(window.location.href, '_blank')}
+                            className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-blue-700 transition-colors flex items-center gap-1 shadow-sm"
+                          >
+                            <ExternalLink size={12} />
+                            Open in New Tab (Recommended)
+                          </button>
+                        )}
+                        <button 
+                          onClick={() => {
+                            setError(null);
+                            startLiveSharing();
+                          }}
+                          className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-blue-700 transition-colors"
+                        >
+                          Try Again
+                        </button>
+                        <button 
+                          onClick={() => {
+                            if (!user) {
+                              setError("Please log in to mock your location.");
+                              return;
+                            }
+                            setIsSharingLive(true);
+                            setIsDemoMode(true);
+                            const center = mapCenter;
+                            updateLocationInFirestore(user.uid, {
+                              busId: user.uid,
+                              routeId: selectedRoute.id,
+                              lat: center[0],
+                              lng: center[1],
+                              speed: 0
+                            });
+                            setError("Mock Location Activated: You are now sharing your current map center as your location in Demo Mode.");
+                          }}
+                          className="text-xs bg-slate-100 text-slate-700 px-3 py-1.5 rounded-lg font-bold hover:bg-slate-200 transition-colors"
+                        >
+                          Use Mock Location
+                        </button>
+                        <button 
+                          onClick={() => setError(null)}
+                          className="text-xs bg-white border border-slate-200 text-slate-500 px-3 py-1.5 rounded-lg font-bold hover:bg-slate-50 transition-colors"
+                        >
+                          Dismiss
+                        </button>
+                      </>
+                    ) : error.includes("Demo Mode Activated") ? (
+                      <>
+                        <button 
+                          onClick={() => setError(null)}
+                          className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-slate-800 transition-colors"
+                        >
+                          Got it
+                        </button>
+                        <button 
+                          onClick={() => window.open(window.location.href, '_blank')}
+                          className="text-xs bg-slate-100 text-slate-700 px-3 py-1.5 rounded-lg font-bold hover:bg-slate-200 transition-colors flex items-center gap-1"
+                        >
+                          <ExternalLink size={12} />
+                          Open in New Tab
+                        </button>
+                      </>
                     ) : (
                       <>
                         {error.includes("Domain") && (
@@ -693,23 +805,14 @@ export default function App() {
                         >
                           Try Again
                         </button>
+                        <button 
+                          onClick={() => setError(null)}
+                          className="text-xs bg-white border border-slate-200 text-slate-500 px-3 py-1.5 rounded-lg font-bold hover:bg-slate-50 transition-colors"
+                        >
+                          Dismiss
+                        </button>
                       </>
                     )}
-                    <a 
-                      href={window.location.href} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-slate-800 transition-colors flex items-center gap-1"
-                    >
-                      Open in New Tab
-                      <ChevronRight size={12} />
-                    </a>
-                    <button 
-                      onClick={() => setError(null)}
-                      className="text-xs bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg font-bold hover:bg-slate-200 transition-colors"
-                    >
-                      Dismiss
-                    </button>
                   </div>
                 </div>
               </div>
@@ -1022,6 +1125,29 @@ export default function App() {
                           Retry Login
                         </button>
                       )}
+                      <button 
+                        onClick={() => {
+                          if (!user) {
+                            setError("Please log in to mock your location.");
+                            return;
+                          }
+                          setIsSharingLive(true);
+                          setIsDemoMode(true);
+                          const center = mapCenter;
+                          updateLocationInFirestore(user.uid, {
+                            busId: user.uid,
+                            routeId: selectedRoute.id,
+                            lat: center[0],
+                            lng: center[1],
+                            speed: 0
+                          });
+                          setError("Mock Location Activated: You are now sharing your current map center as your location in Demo Mode.");
+                        }}
+                        className="w-full py-1.5 bg-amber-50 text-amber-600 rounded-lg text-[10px] font-bold hover:bg-amber-100 transition-colors flex items-center justify-center gap-2"
+                      >
+                        <Navigation size={12} />
+                        Mock My Location (Demo)
+                      </button>
                       <button 
                         onClick={() => window.open(window.location.href, '_blank')}
                         className="w-full py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-bold hover:bg-slate-800 transition-colors flex items-center justify-center gap-2"
